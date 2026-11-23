@@ -1240,19 +1240,52 @@ function isMysqlAuthDatabase(options: {
 // target server. Creating a real database via `CREATE DATABASE` would require
 // elevated privileges that application roles (correctly) don't have, which made
 // `pikku db migrate` fail against managed/locked-down Postgres (error 42501).
+//
+// Booting PGlite costs seconds and `db generate` opens up to three scratch
+// databases, so one instance is wiped and reused rather than booted each time.
+// It is keyed by what it was booted with: another project root or extension set
+// boots its own.
+let idleScratch: { key: string; db: PGlite } | undefined
+
+/** Leaves the database as a freshly booted one, as far as a migration can tell. */
+async function wipeScratch(db: PGlite): Promise<void> {
+  const { rows } = await db.query<{ nspname: string }>(
+    `select nspname from pg_namespace
+     where nspname not like 'pg\\_%' and nspname not in ('information_schema', 'public')`
+  )
+  for (const { nspname } of rows) {
+    await db.exec(`drop schema "${nspname.replaceAll('"', '""')}" cascade`)
+  }
+  await db.exec('drop schema public cascade; create schema public; reset all')
+}
+
 async function withScratchPostgresDatabase<T>(
   context: PGliteExtensionContext,
   run: (scratchDb: PostgresQueryClient) => Promise<T>
 ): Promise<T> {
-  const scratchDb = await createEmbeddedPostgres(context)
+  const key = JSON.stringify([context.rootDir, context.pgliteExtensions])
+  const idle = idleScratch
+  idleScratch = undefined
+  if (idle && idle.key !== key && !idle.db.closed) await idle.db.close()
+  const scratchDb =
+    idle && idle.key === key && !idle.db.closed
+      ? idle.db
+      : await createEmbeddedPostgres(context)
   try {
     return await run(pgliteAsClient(scratchDb))
   } catch (error) {
     throw explainMissingExtension(error, context.pgliteExtensions)
   } finally {
-    if (!scratchDb.closed) {
-      await scratchDb.close()
+    let reusable = !scratchDb.closed && idleScratch === undefined
+    if (reusable) {
+      try {
+        await wipeScratch(scratchDb)
+      } catch {
+        reusable = false
+      }
     }
+    if (reusable) idleScratch = { key, db: scratchDb }
+    else if (!scratchDb.closed) await scratchDb.close()
   }
 }
 
