@@ -889,9 +889,13 @@ describe(`StandaloneProviderAdapter workflow service`, () => {
 
     assert.match(
       source,
-      /import \{ PgKyselyWorkflowService, PgKyselyWorkflowRunService \} from '@pikku\/kysely-postgres'/
+      /import \{ PgKyselyWorkflowService, PgKyselyWorkflowRunService, PgKyselyLeaseService \} from '@pikku\/kysely-postgres'/
     )
-    assert.match(source, /new PgKyselyWorkflowService\(kysely, \{ leaseService/)
+    assert.match(source, /= new PgKyselyLeaseService\(kysely\)/)
+    assert.match(
+      source,
+      /new PgKyselyWorkflowService\(kysely, \{ leaseService \}\)/
+    )
     assert.match(source, /new PgKyselyWorkflowRunService\(kysely\)/)
     assert.match(source, /\n\s+workflowRunService,\n/)
   })
@@ -899,8 +903,23 @@ describe(`StandaloneProviderAdapter workflow service`, () => {
   test('a sqlite app persists runs', () => {
     const source = entry(withDb)
 
-    assert.match(source, /new KyselyWorkflowService\(kysely, \{ leaseService/)
+    assert.match(source, /= new KyselyLeaseService\(kysely\)/)
+    assert.match(
+      source,
+      /new KyselyWorkflowService\(kysely, \{ leaseService \}\)/
+    )
     assert.match(source, /new KyselyWorkflowRunService\(kysely\)/)
+  })
+
+  test('leases fall back to memory when their table is not migrated', () => {
+    const source = entry(withDb)
+
+    assert.match(source, /Workflow leases falling back to memory/)
+    assert.match(source, /leaseService = new InMemoryLeaseService\(\)/)
+    assert.ok(
+      source.indexOf('await leaseService.init()') <
+        source.indexOf('new KyselyWorkflowService(')
+    )
   })
 
   test('falls back to memory when the tables are not migrated', () => {
